@@ -10,11 +10,20 @@
         .upload-section, .player-section, .config-section, .transcript-section, .cache-section { margin-bottom: 20px; }
         audio { width: 100%; margin-top: 10px; }
         .transcript { height: 300px; overflow-y: auto; border: 1px solid #ccc; padding: 10px; background: #fff; }
-        .highlight { background-color: yellow; cursor: pointer; }
+        /* 仅在悬浮时高亮 */
+        .highlight { background-color: transparent; cursor: pointer; transition: background-color .15s ease; }
+        .highlight:hover { background-color: yellow; }
+        /* 灰白间隔行背景 */
+        .transcript > div:nth-child(odd) { background: #ffffff; }
+        .transcript > div:nth-child(even) { background: #f6f6f6; }
         .muted { color: #888; font-size: 12px; }
         .progress { width: 100%; height: 12px; background: #eee; border-radius: 6px; overflow: hidden; margin-top: 8px; }
         .progress-bar { height: 100%; width: 0%; background: linear-gradient(90deg, #4caf50, #8bc34a); transition: width 0.2s ease; }
         .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+        .btn { padding: 6px 10px; border: 1px solid #ccc; border-radius: 4px; background: #fafafa; cursor: pointer; }
+        .btn:active { transform: translateY(1px); }
+        .badge { display: inline-block; min-width: 38px; padding: 2px 6px; border-radius: 4px; background: #eee; text-align: center; }
+        label.inline { display: inline-flex; gap: 6px; align-items: center; }
     </style>
 </head>
 <body>
@@ -24,12 +33,24 @@
         <div class="upload-section">
             <h2>上传音频文件</h2>
             <input type="file" id="audioFile" accept="audio/*">
-            <button onclick="loadAudio()">加载音频</button>
+            <button class="btn" onclick="loadAudio()">加载音频</button>
         </div>
 
         <div class="player-section">
             <h2>音频播放器</h2>
             <audio id="audioPlayer" controls></audio>
+            <!-- 播放控制：区段循环、快进快退、步长调节 -->
+            <div class="row" style="margin-top:8px">
+                <label class="inline"><input type="checkbox" id="loopToggle"> 区段循环</label>
+                <span id="loopInfo" class="muted">循环区段：-- 秒</span>
+            </div>
+            <div class="row">
+                <button class="btn" onclick="rewind()">⏪ 快退</button>
+                <button class="btn" onclick="forward()">快进 ⏩</button>
+                <span class="muted">步长: <span id="skipStepVal" class="badge">15</span>s</span>
+                <button class="btn" onclick="adjustSkipStep(-5)">-5s</button>
+                <button class="btn" onclick="adjustSkipStep(5)">+5s</button>
+            </div>
         </div>
 
         <div class="config-section">
@@ -40,9 +61,9 @@
                 <label for="endTime">结束（秒）:</label>
                 <input type="number" id="endTime" value="60" min="1" step="0.1" style="width:100px">
                 <label for="segmentDuration">单位时长（秒）:</label>
-                <input type="number" id="segmentDuration" value="60" min="30" max="180" step="30" style="width:120px" title="最大180秒">
-                <button onclick="setEndToMax()">对齐到音频末尾</button>
-                <button onclick="startTranscription()">开始转录</button>
+                <input type="number" id="segmentDuration" value="60" min="1" max="180" step="0.1" style="width:120px" title="最大180秒">
+                <button class="btn" onclick="setEndToMax()">对齐到音频末尾</button>
+                <button class="btn" onclick="startTranscription()">开始转录</button>
             </div>
             <div class="row">
                 <div id="segInfo" class="muted"></div>
@@ -61,7 +82,7 @@
             <h2>缓存</h2>
             <div class="row">
                 <div id="cacheInfo" class="muted">缓存大小：--</div>
-                <button onclick="clearCache()">清理缓存</button>
+                <button class="btn" onclick="clearCache()">清理缓存</button>
             </div>
         </div>
     </div>
@@ -73,14 +94,60 @@
         let progressBar = document.getElementById('progressBar');
         let cacheInfo = document.getElementById('cacheInfo');
         let audioDuration = null; // 真实音频时长（秒）
+        // 循环与快进快退参数
+        let loopEnabled = false;
+        let loopStart = null;
+        let loopEnd = null;
+        let skipStep = 15; // 默认步长15秒
+        const skipStepVal = document.getElementById('skipStepVal');
+        const loopToggle = document.getElementById('loopToggle');
+        const loopInfo = document.getElementById('loopInfo');
         
         // 页面加载时自动检查并加载默认音频文件，并获取音频元数据与缓存信息
         window.addEventListener('load', function() {
             checkAndLoadDefaultAudio();
             refreshAudioMetadata();
             refreshCacheInfo();
+            updateSkipStepUI();
         });
         
+        loopToggle.addEventListener('change', (e) => {
+            loopEnabled = e.target.checked;
+            // 若开启循环且已有区段，立即跳转到区段起点
+            if (loopEnabled && loopStart != null && loopEnd != null) {
+                audioPlayer.currentTime = loopStart;
+                audioPlayer.play();
+            }
+        });
+
+        audioPlayer.addEventListener('timeupdate', () => {
+            if (loopEnabled && loopStart != null && loopEnd != null) {
+                // 留出一个很小的缓冲，避免时间update误差
+                if (audioPlayer.currentTime >= loopEnd - 0.05) {
+                    audioPlayer.currentTime = loopStart;
+                    // 继续播放形成循环
+                    if (audioPlayer.paused) audioPlayer.play();
+                }
+            }
+        });
+
+        function updateSkipStepUI() { skipStepVal.textContent = String(skipStep); }
+        function adjustSkipStep(delta) {
+            skipStep = Math.max(5, skipStep + delta); // 最小5秒
+            updateSkipStepUI();
+        }
+        function rewind() {
+            const cur = audioPlayer.currentTime || 0;
+            const target = Math.max(0, cur - skipStep);
+            audioPlayer.currentTime = target;
+        }
+        function forward() {
+            const dur = audioDuration || audioPlayer.duration || Infinity;
+            const cur = audioPlayer.currentTime || 0;
+            const target = Math.min(dur, cur + skipStep);
+            audioPlayer.currentTime = target;
+        }
+
         function refreshAudioMetadata() {
             fetch('/audio/metadata').then(r => r.json()).then(data => {
                 if (data.exists && typeof data.duration === 'number') {
@@ -232,14 +299,38 @@
             else { el.innerHTML = html; }
         }
 
+        // 点击转录文本：跳转播放 + 更新循环区段
         transcriptDiv.addEventListener('click', function(e) {
             if (e.target.classList.contains('highlight')) {
-                const timestamp = e.target.getAttribute('data-timestamp');
-                if (timestamp && audioPlayer.src) {
-                    audioPlayer.currentTime = parseFloat(timestamp);
+                const ts = e.target.getAttribute('data-timestamp');
+                if (ts && audioPlayer.src) {
+                    const startTs = parseFloat(ts);
+                    // 结束时间：采用“当前段起点 + 单位时长（segmentDuration）”的规则
+                    const segDurInput = document.getElementById('segmentDuration');
+                    const segDur = Math.max(1, parseFloat(segDurInput.value) || 0);
+                    let endTs = startTs + segDur;
+
+                    // 约束结束时间到配置的 endTime 和音频总时长之内（若可用）
+                    const p = getParams();
+                    if (typeof p.endTime === 'number' && !isNaN(p.endTime)) {
+                        endTs = Math.min(endTs, p.endTime);
+                    }
+                    if (typeof audioDuration === 'number' && !isNaN(audioDuration)) {
+                        endTs = Math.min(endTs, audioDuration);
+                    } else if (!isFinite(audioPlayer.duration)) {
+                        // 兜底，至少保证区段 > 0 秒
+                        endTs = Math.max(endTs, startTs + 1);
+                    }
+
+                    loopStart = startTs;
+                    loopEnd = Math.max(loopStart, endTs);
+                    // 显示为“起始~结束秒”，以整数秒呈现
+                    const s = Math.round(loopStart);
+                    const eSec = Math.round(loopEnd);
+                    loopInfo.textContent = `循环区段：${s}~${eSec}秒`;
+
+                    audioPlayer.currentTime = loopStart;
                     audioPlayer.play();
-                    document.querySelectorAll('.highlight').forEach(el => { el.style.backgroundColor = ''; });
-                    e.target.style.backgroundColor = 'yellow';
                 }
             }
         });
