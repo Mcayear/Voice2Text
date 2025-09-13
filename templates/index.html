@@ -7,11 +7,14 @@
     <style>
         body { font-family: Arial, sans-serif; margin: 20px; background-color: #f4f4f4; }
         .container { max-width: 1200px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
-        .upload-section, .player-section, .config-section, .transcript-section { margin-bottom: 20px; }
+        .upload-section, .player-section, .config-section, .transcript-section, .cache-section { margin-bottom: 20px; }
         audio { width: 100%; margin-top: 10px; }
         .transcript { height: 300px; overflow-y: auto; border: 1px solid #ccc; padding: 10px; background: #fff; }
         .highlight { background-color: yellow; cursor: pointer; }
         .muted { color: #888; font-size: 12px; }
+        .progress { width: 100%; height: 12px; background: #eee; border-radius: 6px; overflow: hidden; margin-top: 8px; }
+        .progress-bar { height: 100%; width: 0%; background: linear-gradient(90deg, #4caf50, #8bc34a); transition: width 0.2s ease; }
+        .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
     </style>
 </head>
 <body>
@@ -31,20 +34,35 @@
 
         <div class="config-section">
             <h2>分割配置</h2>
-            <label for="startTime">开始时间（秒）:</label>
-            <input type="number" id="startTime" value="0" min="0">
-            <label for="endTime">结束时间（秒）:</label>
-            <input type="number" id="endTime" value="60" min="1">
-            <label for="segmentDuration">分割单位时长（秒）:</label>
-            <input type="number" id="segmentDuration" value="60" min="1">
-            <button onclick="applySegmentation()">应用分割</button>
-            <button onclick="startTranscription()">开始转录</button>
+            <div class="row">
+                <label for="startTime">开始（秒）:</label>
+                <input type="number" id="startTime" value="0" min="0" step="0.1" style="width:100px">
+                <label for="endTime">结束（秒）:</label>
+                <input type="number" id="endTime" value="60" min="1" step="0.1" style="width:100px">
+                <label for="segmentDuration">单位时长（秒）:</label>
+                <input type="number" id="segmentDuration" value="60" min="30" max="180" step="30" style="width:120px" title="最大180秒">
+                <button onclick="setEndToMax()">对齐到音频末尾</button>
+                <button onclick="startTranscription()">开始转录</button>
+            </div>
+            <div class="row">
+                <div id="segInfo" class="muted"></div>
+            </div>
+            <div class="progress" title="分割/转录进度">
+                <div id="progressBar" class="progress-bar"></div>
+            </div>
         </div>
 
         <div class="transcript-section">
             <h2>转录文本</h2>
             <div id="transcript" class="transcript"></div>
-            <div class="muted" id="segInfo"></div>
+        </div>
+
+        <div class="cache-section">
+            <h2>缓存</h2>
+            <div class="row">
+                <div id="cacheInfo" class="muted">缓存大小：--</div>
+                <button onclick="clearCache()">清理缓存</button>
+            </div>
         </div>
     </div>
 
@@ -52,17 +70,47 @@
         let audioPlayer = document.getElementById('audioPlayer');
         let transcriptDiv = document.getElementById('transcript');
         let segInfo = document.getElementById('segInfo');
+        let progressBar = document.getElementById('progressBar');
+        let cacheInfo = document.getElementById('cacheInfo');
+        let audioDuration = null; // 真实音频时长（秒）
         
-        // 页面加载时自动检查并加载默认音频文件
+        // 页面加载时自动检查并加载默认音频文件，并获取音频元数据与缓存信息
         window.addEventListener('load', function() {
             checkAndLoadDefaultAudio();
+            refreshAudioMetadata();
+            refreshCacheInfo();
         });
         
+        function refreshAudioMetadata() {
+            fetch('/audio/metadata').then(r => r.json()).then(data => {
+                if (data.exists && typeof data.duration === 'number') {
+                    audioDuration = data.duration;
+                    const endInput = document.getElementById('endTime');
+                    if (parseFloat(endInput.value) > audioDuration) {
+                        endInput.value = Math.max(1, Math.floor(audioDuration));
+                        alert('已根据真实音频时长自动限制结束时间');
+                    }
+                }
+            }).catch(() => {});
+        }
+        
+        function refreshCacheInfo() {
+            fetch('/cache/info').then(r => r.json()).then(data => {
+                const size = data.size_bytes || 0;
+                cacheInfo.textContent = '缓存大小：' + humanFileSize(size);
+            }).catch(() => { cacheInfo.textContent = '缓存大小：--'; });
+        }
+        
+        function clearCache() {
+            fetch('/cache/clear', { method: 'POST' }).then(r => r.json()).then(_ => {
+                refreshCacheInfo();
+            });
+        }
+
         function checkAndLoadDefaultAudio() {
             fetch('/uploads/output_clip.wav', { method: 'HEAD' })
                 .then(response => {
                     if (response.ok) {
-                        // 默认音频文件存在，自动加载
                         audioPlayer.src = '/uploads/output_clip.wav';
                         audioPlayer.load();
                         console.log('已自动加载默认音频文件: output_clip.wav');
@@ -81,7 +129,10 @@
                 formData.append('file', file);
                 fetch('/upload', { method: 'POST', body: formData })
                 .then(response => response.json())
-                .then(data => { audioPlayer.src = data.url; audioPlayer.load(); })
+                .then(data => {
+                    audioPlayer.src = data.url; audioPlayer.load();
+                    setTimeout(() => { refreshAudioMetadata(); }, 200);
+                })
                 .catch(error => console.error('Error:', error));
             }
         }
@@ -95,21 +146,15 @@
 
         function validateParams() {
             const { startTime, endTime, segmentDuration } = getParams();
-            if (isNaN(startTime) || isNaN(endTime) || isNaN(segmentDuration)) {
-                alert('请输入有效的数字参数');
-                return false;
-            }
-            if (endTime <= startTime) {
-                alert('结束时间必须大于开始时间');
-                return false;
-            }
-            if (segmentDuration <= 0) {
-                alert('分割单位时长必须大于0');
-                return false;
-            }
+            if (isNaN(startTime) || isNaN(endTime) || isNaN(segmentDuration)) { alert('请输入有效的数字参数'); return false; }
+            if (endTime <= startTime) { alert('结束时间必须大于开始时间'); return false; }
+            if (segmentDuration <= 0) { alert('分割单位时长必须大于0'); return false; }
+            if (segmentDuration > 180) { alert('分割单位时长不能超过 180 秒'); return false; }
             const windowLen = endTime - startTime;
-            if (segmentDuration > windowLen) {
-                alert('分割单位时长不能超过(结束时间-开始时间)');
+            if (segmentDuration > windowLen) { alert('分割单位时长不能超过(结束时间-开始时间)'); return false; }
+            if (audioDuration && endTime > audioDuration) {
+                alert('结束时间不能超过音频总时长，已自动调整');
+                document.getElementById('endTime').value = Math.max(1, Math.floor(audioDuration));
                 return false;
             }
             return true;
@@ -120,8 +165,8 @@
             const { startTime, endTime, segmentDuration } = getParams();
             transcriptDiv.innerHTML = '';
             segInfo.textContent = '';
+            setProgress(0);
 
-            // 使用SSE进行实时更新
             const url = new URL('/transcribe/stream', window.location.origin);
             url.searchParams.set('start_time', startTime);
             url.searchParams.set('end_time', endTime);
@@ -133,14 +178,17 @@
                 try {
                     const data = JSON.parse(event.data);
                     if (data.type === 'segments') {
-                        segInfo.textContent = `将分割为 ${data.segments_count} 个片段`;
+                        segInfo.textContent = `将分割为 ${data.segments_count} 个片段${data.cached ? '（命中缓存）' : ''}`;
                     } else if (data.type === 'partial') {
-                        // 实时局部更新：替换或追加该时间戳对应内容
                         upsertTranscript(data.timestamp, data.text);
                     } else if (data.type === 'segment_done') {
                         upsertTranscript(data.timestamp, data.text, true);
+                    } else if (data.type === 'progress') {
+                        setProgress(data.percent || 0);
                     } else if (data.type === 'done') {
+                        setProgress(100);
                         es.close();
+                        refreshCacheInfo();
                     } else if (data.type === 'error') {
                         console.error('SSE错误:', data.message);
                     }
@@ -155,31 +203,35 @@
             };
         }
 
-        function applySegmentation() {
-            if (!validateParams()) return;
-            const { startTime, endTime, segmentDuration } = getParams();
-            alert(`应用分割配置：开始时间 ${startTime}秒，结束时间 ${endTime}秒，单位时长 ${segmentDuration}秒`);
+        function setEndToMax() {
+            const endInput = document.getElementById('endTime');
+            if (typeof audioDuration === 'number' && !isNaN(audioDuration)) {
+                endInput.value = Math.max(1, Math.floor(audioDuration));
+            } else {
+                // 若未知音频时长，尝试刷新一次元数据后再设置
+                refreshAudioMetadata();
+                setTimeout(() => {
+                    if (typeof audioDuration === 'number' && !isNaN(audioDuration)) {
+                        endInput.value = Math.max(1, Math.floor(audioDuration));
+                    } else {
+                        alert('暂无法获取音频总时长，请先加载音频');
+                    }
+                }, 250);
+            }
         }
 
-        // 将某个时间戳的文本插入或更新到转录区域，并加上可点击跳转
+        function setProgress(pct) {
+            progressBar.style.width = Math.max(0, Math.min(100, pct)) + '%';
+        }
+
         function upsertTranscript(timestamp, text, finalized=false) {
             const id = `ts-${timestamp}`;
             let el = document.getElementById(id);
             const html = `<span class="highlight" data-timestamp="${timestamp}">${escapeHtml(text)}</span>`;
-            if (!el) {
-                el = document.createElement('div');
-                el.id = id;
-                el.innerHTML = html;
-                transcriptDiv.appendChild(el);
-            } else {
-                el.innerHTML = html;
-            }
-            if (finalized) {
-                // 可以在最终时刻添加样式或标记
-            }
+            if (!el) { el = document.createElement('div'); el.id = id; el.innerHTML = html; transcriptDiv.appendChild(el); }
+            else { el.innerHTML = html; }
         }
 
-        // 点击文本跳转播放的功能
         transcriptDiv.addEventListener('click', function(e) {
             if (e.target.classList.contains('highlight')) {
                 const timestamp = e.target.getAttribute('data-timestamp');
@@ -192,15 +244,22 @@
             }
         });
 
-        // 格式化转录文本，添加时间戳标记（用于非SSE一次性结果）
         function formatTranscriptWithTimestamps(transcriptText) {
             return transcriptText.replace(/\[(\d+\.?\d*)\]([^\[]+)/g, '<span class="highlight" data-timestamp="$1">$2</span>');
         }
 
-        // 简单转义，防止文本注入
         function escapeHtml(text) {
             const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' };
             return String(text).replace(/[&<>"']/g, m => map[m]);
+        }
+
+        function humanFileSize(bytes) {
+            const thresh = 1024;
+            if (Math.abs(bytes) < thresh) return bytes + ' B';
+            const units = ['KB','MB','GB','TB','PB','EB','ZB','YB'];
+            let u = -1;
+            do { bytes /= thresh; ++u; } while (Math.abs(bytes) >= thresh && u < units.length - 1);
+            return bytes.toFixed(1)+' '+units[u];
         }
     </script>
 </body>

@@ -4,3 +4,4 @@ asr_complete_result.txt
 asr_result.txt
 __pycache__/
 *.wav
+temp/
