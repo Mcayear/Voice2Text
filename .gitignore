@@ -1,0 +1,6 @@
+split_audio_transcribe/
+uploads/
+asr_complete_result.txt
+asr_result.txt
+__pycache__/
+*.wav

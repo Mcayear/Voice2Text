@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>音频转录可视化工具</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; background-color: #f4f4f4; }
+        .container { max-width: 1200px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+        .upload-section, .player-section, .config-section, .transcript-section { margin-bottom: 20px; }
+        audio { width: 100%; margin-top: 10px; }
+        .transcript { height: 300px; overflow-y: auto; border: 1px solid #ccc; padding: 10px; background: #fff; }
+        .highlight { background-color: yellow; cursor: pointer; }
+        .muted { color: #888; font-size: 12px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>音频转录可视化工具</h1>
+        
+        <div class="upload-section">
+            <h2>上传音频文件</h2>
+            <input type="file" id="audioFile" accept="audio/*">
+            <button onclick="loadAudio()">加载音频</button>
+        </div>
+
+        <div class="player-section">
+            <h2>音频播放器</h2>
+            <audio id="audioPlayer" controls></audio>
+        </div>
+
+        <div class="config-section">
+            <h2>分割配置</h2>
+            <label for="startTime">开始时间（秒）:</label>
+            <input type="number" id="startTime" value="0" min="0">
+            <label for="endTime">结束时间（秒）:</label>
+            <input type="number" id="endTime" value="60" min="1">
+            <label for="segmentDuration">分割单位时长（秒）:</label>
+            <input type="number" id="segmentDuration" value="60" min="1">
+            <button onclick="applySegmentation()">应用分割</button>
+            <button onclick="startTranscription()">开始转录</button>
+        </div>
+
+        <div class="transcript-section">
+            <h2>转录文本</h2>
+            <div id="transcript" class="transcript"></div>
+            <div class="muted" id="segInfo"></div>
+        </div>
+    </div>
+
+    <script>
+        let audioPlayer = document.getElementById('audioPlayer');
+        let transcriptDiv = document.getElementById('transcript');
+        let segInfo = document.getElementById('segInfo');
+        
+        // 页面加载时自动检查并加载默认音频文件
+        window.addEventListener('load', function() {
+            checkAndLoadDefaultAudio();
+        });
+        
+        function checkAndLoadDefaultAudio() {
+            fetch('/uploads/output_clip.wav', { method: 'HEAD' })
+                .then(response => {
+                    if (response.ok) {
+                        // 默认音频文件存在，自动加载
+                        audioPlayer.src = '/uploads/output_clip.wav';
+                        audioPlayer.load();
+                        console.log('已自动加载默认音频文件: output_clip.wav');
+                    }
+                })
+                .catch(error => {
+                    console.log('默认音频文件不存在，等待用户上传');
+                });
+        }
+
+        function loadAudio() {
+            const fileInput = document.getElementById('audioFile');
+            const file = fileInput.files[0];
+            if (file) {
+                const formData = new FormData();
+                formData.append('file', file);
+                fetch('/upload', { method: 'POST', body: formData })
+                .then(response => response.json())
+                .then(data => { audioPlayer.src = data.url; audioPlayer.load(); })
+                .catch(error => console.error('Error:', error));
+            }
+        }
+
+        function getParams() {
+            const startTime = parseFloat(document.getElementById('startTime').value);
+            const endTime = parseFloat(document.getElementById('endTime').value);
+            const segmentDuration = parseFloat(document.getElementById('segmentDuration').value);
+            return { startTime, endTime, segmentDuration };
+        }
+
+        function validateParams() {
+            const { startTime, endTime, segmentDuration } = getParams();
+            if (isNaN(startTime) || isNaN(endTime) || isNaN(segmentDuration)) {
+                alert('请输入有效的数字参数');
+                return false;
+            }
+            if (endTime <= startTime) {
+                alert('结束时间必须大于开始时间');
+                return false;
+            }
+            if (segmentDuration <= 0) {
+                alert('分割单位时长必须大于0');
+                return false;
+            }
+            const windowLen = endTime - startTime;
+            if (segmentDuration > windowLen) {
+                alert('分割单位时长不能超过(结束时间-开始时间)');
+                return false;
+            }
+            return true;
+        }
+
+        function startTranscription() {
+            if (!validateParams()) return;
+            const { startTime, endTime, segmentDuration } = getParams();
+            transcriptDiv.innerHTML = '';
+            segInfo.textContent = '';
+
+            // 使用SSE进行实时更新
+            const url = new URL('/transcribe/stream', window.location.origin);
+            url.searchParams.set('start_time', startTime);
+            url.searchParams.set('end_time', endTime);
+            url.searchParams.set('segment_duration', segmentDuration);
+
+            const es = new EventSource(url.toString());
+
+            es.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    if (data.type === 'segments') {
+                        segInfo.textContent = `将分割为 ${data.segments_count} 个片段`;
+                    } else if (data.type === 'partial') {
+                        // 实时局部更新：替换或追加该时间戳对应内容
+                        upsertTranscript(data.timestamp, data.text);
+                    } else if (data.type === 'segment_done') {
+                        upsertTranscript(data.timestamp, data.text, true);
+                    } else if (data.type === 'done') {
+                        es.close();
+                    } else if (data.type === 'error') {
+                        console.error('SSE错误:', data.message);
+                    }
+                } catch (e) {
+                    console.error('解析SSE数据失败:', e);
+                }
+            };
+
+            es.onerror = (e) => {
+                console.error('SSE连接出错:', e);
+                es.close();
+            };
+        }
+
+        function applySegmentation() {
+            if (!validateParams()) return;
+            const { startTime, endTime, segmentDuration } = getParams();
+            alert(`应用分割配置：开始时间 ${startTime}秒，结束时间 ${endTime}秒，单位时长 ${segmentDuration}秒`);
+        }
+
+        // 将某个时间戳的文本插入或更新到转录区域，并加上可点击跳转
+        function upsertTranscript(timestamp, text, finalized=false) {
+            const id = `ts-${timestamp}`;
+            let el = document.getElementById(id);
+            const html = `<span class="highlight" data-timestamp="${timestamp}">${escapeHtml(text)}</span>`;
+            if (!el) {
+                el = document.createElement('div');
+                el.id = id;
+                el.innerHTML = html;
+                transcriptDiv.appendChild(el);
+            } else {
+                el.innerHTML = html;
+            }
+            if (finalized) {
+                // 可以在最终时刻添加样式或标记
+            }
+        }
+
+        // 点击文本跳转播放的功能
+        transcriptDiv.addEventListener('click', function(e) {
+            if (e.target.classList.contains('highlight')) {
+                const timestamp = e.target.getAttribute('data-timestamp');
+                if (timestamp && audioPlayer.src) {
+                    audioPlayer.currentTime = parseFloat(timestamp);
+                    audioPlayer.play();
+                    document.querySelectorAll('.highlight').forEach(el => { el.style.backgroundColor = ''; });
+                    e.target.style.backgroundColor = 'yellow';
+                }
+            }
+        });
+
+        // 格式化转录文本，添加时间戳标记（用于非SSE一次性结果）
+        function formatTranscriptWithTimestamps(transcriptText) {
+            return transcriptText.replace(/\[(\d+\.?\d*)\]([^\[]+)/g, '<span class="highlight" data-timestamp="$1">$2</span>');
+        }
+
+        // 简单转义，防止文本注入
+        function escapeHtml(text) {
+            const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' };
+            return String(text).replace(/[&<>"']/g, m => map[m]);
+        }
+    </script>
+</body>
+</html>
