@@ -9,7 +9,10 @@
         .container { max-width: 1200px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
         .upload-section, .player-section, .config-section, .transcript-section, .cache-section { margin-bottom: 20px; }
         audio { width: 100%; margin-top: 10px; }
-        .transcript { height: 300px; overflow-y: auto; border: 1px solid #ccc; padding: 10px; background: #fff; }
+        .transcript { height: 300px; overflow-y: auto; border: 1px solid #ccc; padding: 10px; background: #fff; position: relative; }
+        .transcript-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+        .export-btn { padding: 4px 8px; border: 1px solid #ccc; border-radius: 4px; background: #fafafa; cursor: pointer; font-size: 12px; }
+        .export-btn:hover { background: #eee; }
         /* 仅在悬浮时高亮 */
         .highlight { background-color: transparent; cursor: pointer; transition: background-color .15s ease; }
         .highlight:hover { background-color: yellow; }
@@ -74,7 +77,10 @@
         </div>
 
         <div class="transcript-section">
-            <h2>转录文本</h2>
+            <div class="transcript-header">
+                <h2>转录文本</h2>
+                <button class="export-btn" onclick="exportTranscript()">导出文本</button>
+            </div>
             <div id="transcript" class="transcript"></div>
         </div>
 
@@ -334,6 +340,38 @@
                 }
             }
         });
+
+        // 导出转录文本为纯文本文件
+        function exportTranscript() {
+            const lines = transcriptDiv.querySelectorAll('div');
+            if (lines.length === 0) {
+                alert('没有转录文本可导出');
+                return;
+            }
+            
+            let content = '';
+            lines.forEach(line => {
+                const text = line.textContent.trim();
+                if (text) {
+                    content += text + '\n';
+                }
+            });
+            
+            if (!content) {
+                alert('转录文本为空');
+                return;
+            }
+            
+            const blob = new Blob([content], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'transcript.txt';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
 
         function formatTranscriptWithTimestamps(transcriptText) {
             return transcriptText.replace(/\[(\d+\.?\d*)\]([^\[]+)/g, '<span class="highlight" data-timestamp="$1">$2</span>');

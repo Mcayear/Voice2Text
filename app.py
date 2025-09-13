@@ -133,9 +133,9 @@ def transcribe_audio():
         if not os.path.exists(base_dir):
             os.makedirs(base_dir)
 
-        segment_length_ms = int(segment_duration * 1000)
-        start_ms = int(start_time * 1000)
-        end_ms = int(end_time * 1000)
+        segment_length_ms = int(segment_duration* 1)
+        start_ms = int(start_time* 1)
+        end_ms = int(end_time* 1)
 
         # 缓存目录：根据参数组合
         cache_dir = compute_cache_dir(base_dir, start_ms, end_ms, segment_length_ms)
@@ -223,9 +223,9 @@ def transcribe_audio_stream():
     if not os.path.exists(base_dir):
         os.makedirs(base_dir)
 
-    segment_length_ms = int(segment_duration * 1000)
-    start_ms = int(start_time * 1000)
-    end_ms = int(end_time * 1000)
+    segment_length_ms = int(segment_duration* 1)
+    start_ms = int(start_time* 1)
+    end_ms = int(end_time* 1)
 
     # 缓存目录
     cache_dir = compute_cache_dir(base_dir, start_ms, end_ms, segment_length_ms)
