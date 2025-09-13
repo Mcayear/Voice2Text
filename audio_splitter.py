@@ -1,69 +1,96 @@
 import os
 import math
-from pydub import AudioSegment
+import subprocess
+import shutil  # 添加缺失的 shutil 导入
 
 
-def split_audio(input_file, output_dir, segment_length_ms=60000, start_ms=0, end_ms=None):  # 支持按起止时间裁剪后分段
-    """分割音频文件为多个小段
-    - input_file: 输入音频路径（wav）
-    - output_dir: 输出目录
-    - segment_length_ms: 每段目标长度（毫秒）
-    - start_ms: 需要从原音频截取的起始时间（毫秒）
-    - end_ms: 需要从原音频截取的结束时间（毫秒），None表示到末尾
-    返回: 生成的分段文件路径列表
-    """
+def _ffprobe_duration(input_file: str) -> float:
+    # 用 ffprobe 获取时长（秒，float）
+    cmd = [
+        "ffprobe", "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=nw=1:nk=1",
+        input_file
+    ]
+    res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if res.returncode != 0:
+        raise RuntimeError(f"无法获取音频时长: {res.stderr.strip()}")
+    try:
+        return float(res.stdout.strip())
+    except ValueError:
+        raise RuntimeError(f"ffprobe 返回的时长非法: {res.stdout!r}")
+
+
+def split_audio(input_file, output_dir, segment_s=60, start_s=0, end_s=None):
+    # 规范化路径
+    input_file = os.path.normpath(input_file)
+    output_dir = os.path.normpath(output_dir)
+
     if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
+        os.makedirs(output_dir, exist_ok=True)
 
-    # 加载音频文件
-    audio = AudioSegment.from_wav(input_file)
-    total_length = len(audio)
+    # 确认 ffmpeg/ffprobe 可用
+    for bin_name in ("ffmpeg", "ffprobe"):
+        if not shutil.which(bin_name):
+            raise EnvironmentError(f"未找到 {bin_name}，请确认其已安装并在 PATH 中")
 
-    # 规范化起止时间
-    start_ms = max(0, int(start_ms or 0))
-    end_ms = total_length if end_ms is None else min(int(end_ms), total_length)
-    if end_ms <= start_ms:
-        raise ValueError("结束时间必须大于开始时间")
+    # 获取整体时长
+    total_duration = _ffprobe_duration(input_file)
 
-    # 先进行裁剪，后续仅在该窗口内分段，保证总分段时长不超过窗口长度
-    window_audio = audio[start_ms:end_ms]
-    window_length = len(window_audio)
+    # 计算裁剪范围
+    start = max(0.0, float(start_s))
+    end = float(end_s) if end_s is not None else total_duration
+    end = min(end, total_duration)
+    if start >= end:
+        raise ValueError("起始时间必须小于结束时间，且在音频长度范围内")
 
-    print(f"音频总长度: {total_length/1000:.2f}秒，裁剪窗口: {window_length/1000:.2f}秒（{start_ms/1000:.2f}s -> {end_ms/1000:.2f}s）")
+    # 分段参数
+    segment_len = float(segment_s)
+    trimmed_duration = end - start
+    num_segments = max(1, math.ceil(trimmed_duration / segment_len))
 
-    # 计算需要分割的段数（按实际最后一段可能小于segment_length_ms处理）
-    num_segments = math.ceil(window_length / segment_length_ms) if segment_length_ms > 0 else 0
-    if segment_length_ms <= 0:
-        raise ValueError("分割单位时长必须大于0")
+    base_name = os.path.splitext(os.path.basename(input_file))[0]
+    exported_files = []
 
-    print(f"将分割为 {num_segments} 个片段")
-
-    split_files = []
+    print("检测到 ffmpeg，将使用 32kbps MP3 格式输出")
 
     for i in range(num_segments):
-        seg_start = i * segment_length_ms
-        seg_end = min((i + 1) * segment_length_ms, window_length)
-        if seg_end <= seg_start:
+        seg_start = start + i * segment_len
+        seg_duration = min(segment_len, end - seg_start)
+        if seg_duration <= 0:
             break
-        # 提取音频段
-        segment = window_audio[seg_start:seg_end]
 
-        # 保存分段文件
-        output_file = os.path.join(output_dir, f"segment_{i+1}.wav")
-        segment.export(output_file, format="wav")
+        out_mp3 = os.path.join(output_dir, f"{base_name}_{i+1:03d}.mp3")
 
-        split_files.append(output_file)
-        print(f"已保存分段 {i+1}: {output_file} ({len(segment)/1000:.2f}秒)")
+        # 使用 ffmpeg 精确裁剪（-ss/-t 放在 -i 之后更精确），并转为 32kbps MP3
+        cmd = [
+            "ffmpeg", "-y",
+            "-hide_banner", "-loglevel", "error",
+            "-i", input_file,
+            "-ss", f"{seg_start:.6f}",
+            "-t", f"{seg_duration:.6f}",
+            "-vn",
+            "-c:a", "libmp3lame",
+            "-b:a", "32k",
+            out_mp3
+        ]
 
-    return split_files
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if res.returncode != 0:
+            raise RuntimeError(f"ffmpeg 转换失败（片段 {i+1}/{num_segments}）: {res.stderr.strip()}")
+
+        exported_files.append(out_mp3)
+        print(f"已导出片段 {i+1}/{num_segments}: {out_mp3}")
+
+    return exported_files
 
 
 if __name__ == "__main__":
-    input_audio = "output_clip.wav"
+    # 示例：把任意输入音频裁剪到 0-120s 区间，并按 30s 一段分割，全部导出为 32kbps MP3
+    import shutil
+    input_audio = "input_audio.m4a"  # 可为 m4a/mp3/wav 等
     output_directory = "split_audio"
-
-    if os.path.exists(input_audio):
-        segments = split_audio(input_audio, output_directory)
-        print(f"\n分割完成! 共生成 {len(segments)} 个音频文件")
-    else:
-        print(f"错误: 文件 {input_audio} 不存在")
+    segments = split_audio(input_audio, output_directory, segment_s=30, start_s=0, end_s=120)
+    print("生成的片段:")
+    for p in segments:
+        print(p)
