@@ -57,11 +57,11 @@
             <h2>分割配置</h2>
             <div class="row">
                 <label for="startTime">开始（秒）:</label>
-                <input type="number" id="startTime" value="0" min="0" step="0.1" style="width:100px">
+                <input type="number" id="startTime" value="0" min="0" step="15" style="width:100px">
                 <label for="endTime">结束（秒）:</label>
-                <input type="number" id="endTime" value="60" min="1" step="0.1" style="width:100px">
+                <input type="number" id="endTime" value="120" min="1" step="15" style="width:100px">
                 <label for="segmentDuration">单位时长（秒）:</label>
-                <input type="number" id="segmentDuration" value="60" min="1" max="180" step="0.1" style="width:120px" title="最大180秒">
+                <input type="number" id="segmentDuration" value="60" min="15" max="180" step="15" style="width:120px" title="最大180秒">
                 <button class="btn" onclick="setEndToMax()">对齐到音频末尾</button>
                 <button class="btn" onclick="startTranscription()">开始转录</button>
             </div>

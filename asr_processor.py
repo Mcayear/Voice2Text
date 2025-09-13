@@ -81,7 +81,7 @@ def process_segmented_audio():
                 asr_options={
                     "language": "zh",
                     "enable_lid": True,
-                    "enable_itn": False
+                    "enable_itn": True # 逆文本规范化
                 },
                 stream=True
             )
