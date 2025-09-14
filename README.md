@@ -2,6 +2,8 @@
 
 一个基于 Flask 的音频转录 Web 应用，支持音频文件上传、智能分割和实时转录，使用阿里云 DashScope 的 ASR 服务提供高质量的语音识别功能。
 
+![web page](./screenshot/web_page.png)
+
 ## ✨ 功能特性
 
 ### 🎵 音频处理
