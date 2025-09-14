@@ -40,7 +40,6 @@ class Config:
 
     # ASR 参数
     ASR_MODEL = "qwen3-asr-flash"
-    ASR_LANGUAGE = "zh"
     ASR_SEGMENT_MAX_SECONDS = 180
 
     # SSE
@@ -146,7 +145,7 @@ class ASRClient:
                 "role": "system",
                 "content": [
                     # 此处用于配置定制化识别的Context
-                    {"text": "混凝土 和易性 浇筑；金结拼装 围堰"},
+                    {"text": asr_system_content},
                 ]
             },
             {
@@ -162,7 +161,7 @@ class ASRClient:
             model=Config.ASR_MODEL,
             messages=messages,
             result_format="message",
-            asr_options={"language": Config.ASR_LANGUAGE, "enable_lid": True, "enable_itn": True},
+            asr_options={"language": asr_language, "enable_lid": True, "enable_itn": True},
             stream=True,
         )
 
@@ -401,4 +400,8 @@ def transcribe_audio_stream():
 
 
 if __name__ == "__main__":
+    global asr_language
+    asr_language = os.getenv("ASR_LANGUAGE", "")
+    global asr_system_content
+    asr_system_content = os.getenv("ASR_SYSTEM_CONTENT", "")
     app.run(debug=True)

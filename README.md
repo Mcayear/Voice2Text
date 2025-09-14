@@ -216,6 +216,10 @@ POST /cache/clear
 | 变量名 | 必需 | 说明 |
 |--------|------|------|
 | `DASHSCOPE_API_KEY` | 是 | 阿里云 DashScope API 密钥 |
+| `ASR_LANGUAGE` | 否 | 音频语言，可提高精准性 |
+| `ASR_SYSTEM_CONTENT` | 否 | 定制化识别文本（类似热词功能） |
+
+ASR_LANGUAGE [可用语言列表](https://help.aliyun.com/zh/model-studio/sensevoice-recorded-speech-recognition-python-sdk?spm=a2c4g.11186623.0.i11#66ac0678d6b4w)
 
 ### 应用配置
 
@@ -231,11 +235,8 @@ class Config:
     
     # ASR 模型配置
     ASR_MODEL = "qwen3-asr-flash"
-    ASR_LANGUAGE = "zh" # 识别的语言: zh, en, ja
     ASR_SEGMENT_MAX_SECONDS = 180  # 最大分割时长
 ```
-
-ASR_LANGUAGE [可用语言列表](https://help.aliyun.com/zh/model-studio/sensevoice-recorded-speech-recognition-python-sdk?spm=a2c4g.11186623.0.i11#66ac0678d6b4w)
 
 ## 🔧 开发指南
 
