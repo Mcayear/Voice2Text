@@ -231,9 +231,11 @@ class Config:
     
     # ASR 模型配置
     ASR_MODEL = "qwen3-asr-flash"
-    ASR_LANGUAGE = "zh" # 识别的语言: zh, en, jp
+    ASR_LANGUAGE = "zh" # 识别的语言: zh, en, ja
     ASR_SEGMENT_MAX_SECONDS = 180  # 最大分割时长
 ```
+
+ASR_LANGUAGE [可用语言列表](https://help.aliyun.com/zh/model-studio/sensevoice-recorded-speech-recognition-python-sdk?spm=a2c4g.11186623.0.i11#66ac0678d6b4w)
 
 ## 🔧 开发指南
 
