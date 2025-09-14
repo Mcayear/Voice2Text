@@ -5,3 +5,4 @@ asr_result.txt
 __pycache__/
 *.wav
 temp/
+.env
