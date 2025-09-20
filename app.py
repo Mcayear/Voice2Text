@@ -20,6 +20,10 @@ from flask import (
 )
 from werkzeug.utils import secure_filename
 from pydub import AudioSegment
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # 第三方 ASR
 import dashscope
@@ -50,6 +54,47 @@ class Config:
 app = Flask(__name__)
 app.config["UPLOAD_FOLDER"] = str(Config.UPLOAD_FOLDER)
 app.config["MAX_CONTENT_LENGTH"] = Config.MAX_CONTENT_LENGTH
+
+# 配置详细日志记录
+import logging
+from logging.handlers import RotatingFileHandler
+
+# 设置日志级别
+log_level = logging.DEBUG if os.getenv("FLASK_DEBUG", "").lower() == "true" else logging.INFO
+
+# 配置控制台日志
+console_handler = logging.StreamHandler()
+console_handler.setLevel(log_level)
+console_formatter = logging.Formatter(
+    '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+console_handler.setFormatter(console_formatter)
+
+# 配置文件日志（轮转日志，最大10MB，保留5个备份）
+file_handler = RotatingFileHandler(
+    'transcription.log', 
+    maxBytes=10*1024*1024,  # 10MB
+    backupCount=5,
+    encoding='utf-8'
+)
+file_handler.setLevel(log_level)
+file_formatter = logging.Formatter(
+    '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+file_handler.setFormatter(file_formatter)
+
+# 配置应用日志
+app.logger.setLevel(log_level)
+app.logger.addHandler(console_handler)
+app.logger.addHandler(file_handler)
+
+# 配置根日志
+logging.basicConfig(
+    level=log_level,
+    handlers=[console_handler, file_handler]
+)
 
 Config.UPLOAD_FOLDER.mkdir(parents=True, exist_ok=True)
 Config.CACHE_BASE_DIR.mkdir(parents=True, exist_ok=True)
@@ -140,6 +185,11 @@ class ASRClient:
         return None
 
     def stream_transcribe_file(self, segment_file: Path) -> Iterable[str]:
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        logger.info(f"[ASR] Starting transcription for file: {segment_file}")
+        
         messages = [
             {
                 "role": "system",
@@ -156,17 +206,27 @@ class ASRClient:
             }
         ]
 
-        response = dashscope.MultiModalConversation.call(
-            api_key=self.api_key,
-            model=Config.ASR_MODEL,
-            messages=messages,
-            result_format="message",
-            asr_options={"language": asr_language, "enable_lid": True, "enable_itn": True},
-            stream=True,
-        )
+        try:
+            logger.info(f"[ASR] Calling dashscope API for file: {segment_file.name}")
+            response = dashscope.MultiModalConversation.call(
+                api_key=self.api_key,
+                model=Config.ASR_MODEL,
+                messages=messages,
+                result_format="message",
+                asr_options={"language": asr_language, "enable_lid": True, "enable_itn": True},
+                stream=True,
+            )
+            logger.info(f"[ASR] API call initiated for file: {segment_file.name}")
+        except Exception as e:
+            logger.error(f"[ASR] API call failed for file {segment_file.name}: {e}")
+            raise
 
+        chunk_count = 0
+        text_yielded = False
+        
         # 兼容两种 chunk 结构
         for chunk in response:
+            chunk_count += 1
             try:
                 # dict 风格
                 if isinstance(chunk, dict) and "output" in chunk:
@@ -177,15 +237,20 @@ class ASRClient:
                         if content:
                             text = content[0].get("text", "")
                             if text:
+                                text_yielded = True
                                 yield text
                 # 对象属性风格
                 elif hasattr(chunk, "output") and chunk.output:
                     text = chunk.output.choices[0].message.content[0].text
                     if text:
+                        text_yielded = True
                         yield text
-            except Exception:
-                # 忽略单个 chunk 错误，不中断整个流
+            except Exception as e:
+                # 记录单个 chunk 错误，但不中断整个流
+                logger.warning(f"[ASR] Error processing chunk {chunk_count} for file {segment_file.name}: {e}")
                 continue
+        
+        logger.info(f"[ASR] Transcription completed for file: {segment_file.name} - chunks processed: {chunk_count}, text yielded: {text_yielded}")
 
 
 # ========== 路由 ==========
@@ -270,78 +335,110 @@ def cache_clear():
 
 @app.route("/transcribe/stream")
 def transcribe_audio_stream():
-    # 参数解析与校验
-    start_time, err = parse_float_arg("start_time", 0.0)
-    if err:
-        return make_json_error(err, 400)
-    end_time, err = parse_float_arg("end_time", 60.0)
-    if err:
-        return make_json_error(err, 400)
-    segment_duration, err = parse_float_arg("segment_duration", 60.0)
-    if err:
-        return make_json_error(err, 400)
-
-    if segment_duration is None or segment_duration <= 0:
-        return make_json_error("分割单位时长必须大于0", 400)
-    if segment_duration > Config.ASR_SEGMENT_MAX_SECONDS:
-        return make_json_error(f"分割单位时长不能超过 {Config.ASR_SEGMENT_MAX_SECONDS} 秒", 400)
-
-    # 选择当前音频
-    filename = get_current_audio_filename()
-    audio_path = safe_join_uploads(filename)
-    if not audio_path.exists():
-        return make_json_error(f"音频文件 {filename} 不存在", 400)
-
+    # 添加详细的请求日志
+    app.logger.info(f"[TRANSCRIBE] Starting transcription request - start_time: {request.args.get('start_time')}, end_time: {request.args.get('end_time')}, segment_duration: {request.args.get('segment_duration')}")
+    
     try:
-        duration = get_audio_duration_seconds(audio_path)
+        # 参数解析与校验
+        start_time, err = parse_float_arg("start_time", 0.0)
+        if err:
+            app.logger.warning(f"[TRANSCRIBE] Invalid start_time parameter: {request.args.get('start_time')}")
+            return make_json_error(err, 400)
+        
+        end_time, err = parse_float_arg("end_time", 60.0)
+        if err:
+            app.logger.warning(f"[TRANSCRIBE] Invalid end_time parameter: {request.args.get('end_time')}")
+            return make_json_error(err, 400)
+            
+        segment_duration, err = parse_float_arg("segment_duration", 60.0)
+        if err:
+            app.logger.warning(f"[TRANSCRIBE] Invalid segment_duration parameter: {request.args.get('segment_duration')}")
+            return make_json_error(err, 400)
+
+        app.logger.info(f"[TRANSCRIBE] Parsed parameters - start_time: {start_time}, end_time: {end_time}, segment_duration: {segment_duration}")
+
+        if segment_duration is None or segment_duration <= 0:
+            app.logger.warning(f"[TRANSCRIBE] Invalid segment_duration: {segment_duration}")
+            return make_json_error("分割单位时长必须大于0", 400)
+        if segment_duration > Config.ASR_SEGMENT_MAX_SECONDS:
+            app.logger.warning(f"[TRANSCRIBE] Segment duration too large: {segment_duration} > {Config.ASR_SEGMENT_MAX_SECONDS}")
+            return make_json_error(f"分割单位时长不能超过 {Config.ASR_SEGMENT_MAX_SECONDS} 秒", 400)
+
+        # 选择当前音频
+        filename = get_current_audio_filename()
+        audio_path = safe_join_uploads(filename)
+        app.logger.info(f"[TRANSCRIBE] Using audio file: {filename}, path: {audio_path}")
+        
+        if not audio_path.exists():
+            app.logger.error(f"[TRANSCRIBE] Audio file not found: {filename}")
+            return make_json_error(f"音频文件 {filename} 不存在", 400)
+
+        try:
+            duration = get_audio_duration_seconds(audio_path)
+            app.logger.info(f"[TRANSCRIBE] Audio duration: {duration} seconds")
+        except Exception as e:
+            app.logger.exception(f"[TRANSCRIBE] Failed to get audio duration for file: {audio_path}")
+            return make_json_error("读取音频失败", 500, {"detail": str(e)})
+
+        end_time = clamp_end_time_by_duration(start_time, end_time, duration)
+        if end_time <= start_time:
+            app.logger.warning(f"[TRANSCRIBE] Invalid time range: start={start_time}, end={end_time}")
+            return make_json_error("结束时间必须大于开始时间", 400)
+        if segment_duration > (end_time - start_time):
+            app.logger.warning(f"[TRANSCRIBE] Segment duration larger than time range: {segment_duration} > {end_time - start_time}")
+            return make_json_error("分割单位时长不能超过(结束时间-开始时间)", 400)
+
+        # 段落边界
+        segment_length_s = int(segment_duration)
+        start_s = int(start_time)
+        end_s = int(end_time)
+
+        cache_dir = compute_cache_dir(start_s, end_s, segment_length_s)
+        estimated_segments = estimate_segments(start_s, end_s, segment_length_s)
+        
+        app.logger.info(f"[TRANSCRIBE] Cache directory: {cache_dir}, estimated segments: {estimated_segments}")
+
+        # 依赖注入 ASR 客户端
+        asr_client = ASRClient(api_key=get_env_or_none("DASHSCOPE_API_KEY"))
+        asr_err = asr_client.ensure_ready()
+        if asr_err:
+            app.logger.error(f"[TRANSCRIBE] ASR client not ready: {asr_err}")
+            return make_json_error(asr_err, 500)
+            
+        app.logger.info("[TRANSCRIBE] ASR client ready, starting stream generation")
     except Exception as e:
-        app.logger.exception("获取音频时长失败")
-        return make_json_error("读取音频失败", 500, {"detail": str(e)})
-
-    end_time = clamp_end_time_by_duration(start_time, end_time, duration)
-    if end_time <= start_time:
-        return make_json_error("结束时间必须大于开始时间", 400)
-    if segment_duration > (end_time - start_time):
-        return make_json_error("分割单位时长不能超过(结束时间-开始时间)", 400)
-
-    # 段落边界
-    segment_length_s = int(segment_duration)
-    start_s = int(start_time)
-    end_s = int(end_time)
-
-    cache_dir = compute_cache_dir(start_s, end_s, segment_length_s)
-    estimated_segments = estimate_segments(start_s, end_s, segment_length_s)
-
-    # 依赖注入 ASR 客户端
-    asr_client = ASRClient(api_key=get_env_or_none("DASHSCOPE_API_KEY"))
-    asr_err = asr_client.ensure_ready()
-    if asr_err:
-        return make_json_error(asr_err, 500)
+        app.logger.exception(f"[TRANSCRIBE] Unexpected error during parameter validation: {e}")
+        return make_json_error(f"参数验证失败: {e}", 500, {"detail": str(e)})
 
     # 延迟导入分割工具（保持兼容现有模块）
     try:
         from audio_splitter import split_audio
+        app.logger.info("[TRANSCRIBE] Audio splitter module imported successfully")
     except Exception as e:
-        app.logger.exception("导入 audio_splitter 失败")
+        app.logger.exception(f"[TRANSCRIBE] Failed to import audio_splitter module: {e}")
         return make_json_error("服务端缺少音频分割依赖", 500, {"detail": str(e)})
 
     @stream_with_context
     def generate() -> Generator[str, None, None]:
-        app.logger.debug("[SSE] stream start")
+        app.logger.info(f"[TRANSCRIBE] Starting SSE stream generation - cache_dir: {cache_dir}, estimated_segments: {estimated_segments}")
         try:
             # 准备分片
             if cache_dir.exists():
                 split_files = sorted(Path(cache_dir).glob("*.mp3"))
+                app.logger.info(f"[TRANSCRIBE] Found cached split files: {len(split_files)} files")
             else:
                 split_files = []
+                app.logger.info("[TRANSCRIBE] No cached files found")
 
             # 预先告知分片数量
             if split_files:
                 yield sse_event({"type": "segments", "segments_count": len(split_files), "cached": True})
+                app.logger.info(f"[TRANSCRIBE] Using cached segments: {len(split_files)} files")
             else:
                 yield sse_event({"type": "segments", "segments_count": estimated_segments, "cached": False})
                 yield sse_event({"type": "status", "message": "splitting"})
                 cache_dir.mkdir(parents=True, exist_ok=True)
+                app.logger.info(f"[TRANSCRIBE] Starting audio splitting - audio_path: {audio_path}, cache_dir: {cache_dir}, segment_length: {segment_length_s}, start: {start_s}, end: {end_s}")
                 try:
                     # split_audio 接口保持不变
                     results: List[str] = split_audio(
@@ -352,24 +449,32 @@ def transcribe_audio_stream():
                         end_s=end_s,
                     )
                     split_files = [Path(p) for p in results]
+                    app.logger.info(f"[TRANSCRIBE] Audio splitting completed: {len(split_files)} segments")
                 except Exception as e:
-                    app.logger.exception("[SSE] split_audio 出错")
+                    app.logger.exception(f"[TRANSCRIBE] Audio splitting failed: {e}")
                     yield sse_event({"type": "error", "message": f"音频分割失败: {e}"})
                     yield sse_event({"type": "done"})
                     return
 
             total = max(1, len(split_files))
+            app.logger.info(f"[TRANSCRIBE] Starting transcription for {total} segments")
+            
             # 转录
             for idx, seg in enumerate(split_files):
+                app.logger.info(f"[TRANSCRIBE] Processing segment {idx + 1}/{total}: {seg}")
                 try:
                     current_text = ""
+                    chunk_count = 0
                     for text_chunk in asr_client.stream_transcribe_file(seg):
                         current_text = text_chunk
+                        chunk_count += 1
                         yield sse_event({
                             "type": "partial",
                             "timestamp": idx * segment_length_s + start_s,
                             "text": current_text
                         })
+                    app.logger.info(f"[TRANSCRIBE] Segment {idx + 1} transcription completed - chunks: {chunk_count}, final text length: {len(current_text)}")
+                    
                     if current_text:
                         yield sse_event({
                             "type": "segment_done",
@@ -377,16 +482,17 @@ def transcribe_audio_stream():
                             "text": current_text
                         })
                 except Exception as e:
-                    app.logger.exception("[SSE] 单段转录失败")
+                    app.logger.exception(f"[TRANSCRIBE] Transcription failed for segment {idx + 1}: {seg}")
                     yield sse_event({"type": "error", "message": f"分段 {idx+1} 转录出错: {e}"})
                 finally:
                     percent = int((idx + 1) / total * 100)
                     yield sse_event({"type": "progress", "percent": percent})
+                    app.logger.debug(f"[TRANSCRIBE] Progress: {percent}%")
 
             yield sse_event({"type": "done"})
-            app.logger.debug("[SSE] all done")
+            app.logger.info("[TRANSCRIBE] All transcription completed successfully")
         except Exception as e:
-            app.logger.exception("[SSE] global error")
+            app.logger.exception(f"[TRANSCRIBE] Global error in stream generation: {e}")
             yield sse_event({"type": "error", "message": str(e)})
             yield sse_event({"type": "done"})
 
@@ -404,4 +510,6 @@ if __name__ == "__main__":
     asr_language = os.getenv("ASR_LANGUAGE", "")
     global asr_system_content
     asr_system_content = os.getenv("ASR_SYSTEM_CONTENT", "")
+    app.logger.info(f"ASR_LANGUAGE: {asr_language}")
+    app.logger.info(f"ASR_SYSTEM_CONTENT: {asr_system_content}")
     app.run(debug=True)
